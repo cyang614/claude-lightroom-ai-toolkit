@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+
+.venv/
+venv/
+env/
+
+.env
+.streamlit/secrets.toml
+
+outputs/
+
+# Local credentials and API tokens
+google_drive_oauth_token.json
+client_secret_*.json
+claude-photo-*.json
+*service_account*.json
+*credentials*.json
+*token*.json
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

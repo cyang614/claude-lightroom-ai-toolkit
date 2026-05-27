@@ -1,0 +1,118 @@
+{
+  "database_name": "照片分析",
+  "recommended_properties": {
+    "Name": {
+      "type": "title",
+      "required_by_app": true,
+      "description": "Claude 根據照片內容產生的照片名稱"
+    },
+    "Score": {
+      "type": "number",
+      "required_by_app": true,
+      "description": "Claude 綜合評分 0-100"
+    },
+    "Status": {
+      "type": "select",
+      "required_by_app": true,
+      "options": ["精選", "可修", "淘汰"],
+      "description": "Claude 自動判斷的作品集篩選狀態"
+    },
+    "Tags": {
+      "type": "multi_select",
+      "required_by_app": true,
+      "description": "Claude 自動產生的主體、類型、情緒、色調與修圖方向標籤"
+    },
+    "Type": {
+      "type": "select",
+      "required_by_app": true,
+      "options": ["Photo Analysis", "Batch Summary"],
+      "description": "資料類型"
+    },
+    "Composition Analysis": {
+      "type": "rich_text",
+      "required_by_app": true,
+      "description": "構圖分析"
+    },
+    "Lighting Analysis": {
+      "type": "rich_text",
+      "required_by_app": true,
+      "description": "光影分析"
+    },
+    "Color Analysis": {
+      "type": "rich_text",
+      "required_by_app": true,
+      "description": "色彩分析"
+    },
+    "Shoot Date": {
+      "type": "date",
+      "required_by_app": false,
+      "description": "拍攝日期，可手動補"
+    },
+    "Lightroom Ready": {
+      "type": "checkbox",
+      "required_by_app": false,
+      "description": "是否已匯入 Lightroom 或完成修圖"
+    },
+    "XMP Path": {
+      "type": "rich_text",
+      "required_by_app": false,
+      "description": "本機 XMP 檔案路徑；完整 XMP 內容會寫在 Notion page 的 XML code block"
+    },
+    "Compressed Image Path": {
+      "type": "rich_text",
+      "required_by_app": false,
+      "description": "本機壓縮後圖片路徑"
+    },
+    "Notes": {
+      "type": "rich_text",
+      "required_by_app": false,
+      "description": "人工備註"
+    }
+  },
+  "unsupported_native_uploads": {
+    "XMP": {
+      "reason": "Notion File Upload API currently rejects the .xmp extension.",
+      "app_behavior": "The app stores the full XMP preset in the Notion page as an XML code block instead."
+    }
+  },
+  "recommended_views": [
+    {
+      "name": "All Photos",
+      "type": "table",
+      "filter": "Type is Photo Analysis",
+      "sort": "Score descending"
+    },
+    {
+      "name": "Gallery",
+      "type": "gallery",
+      "filter": "Type is Photo Analysis",
+      "card_preview": "Page cover",
+      "sort": "Score descending"
+    },
+    {
+      "name": "精選",
+      "type": "gallery_or_table",
+      "filter": "Type is Photo Analysis AND Status is 精選"
+    },
+    {
+      "name": "待修",
+      "type": "table",
+      "filter": "Status is 可修"
+    },
+    {
+      "name": "淘汰",
+      "type": "table",
+      "filter": "Status is 淘汰"
+    },
+    {
+      "name": "By Tags",
+      "type": "board_or_table",
+      "group_by": "Tags"
+    },
+    {
+      "name": "Batch Summaries",
+      "type": "table",
+      "filter": "Type is Batch Summary"
+    }
+  ]
+}

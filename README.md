@@ -158,6 +158,11 @@ streamlit run app.py
 python3 -m unittest tests.test_photo_analyzer -v
 ```
 
+export NOTION_TOKEN="你的 Notion token"
+export NOTION_DATABASE_ID="你的 database id"
+export ANTHROPIC_API_KEY="你的 Anthropic key"
+streamlit run app.py
+
 ## 檔案說明
 
 - `app.py`：Streamlit 前端、批次處理、下載與 Notion 匯出流程。

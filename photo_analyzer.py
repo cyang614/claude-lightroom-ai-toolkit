@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import base64
 import csv
-from collections import Counter
-from datetime import datetime
 import html
 import io
 import json
@@ -30,6 +28,7 @@ SUPPORTED_IMAGE_TYPES = {
     "png": "image/png",
     "cr3": "image/jpeg",  # CR3 is converted to JPEG preview bytes before calling Claude.
 }
+DEFAULT_DOTENV_PATH = Path(__file__).with_name(".env")
 
 
 class AnthropicAPIError(RuntimeError):
@@ -57,6 +56,62 @@ LIGHTROOM_SCHEMA_PROPERTIES: dict[str, dict[str, Any]] = {
     "PostCropVignetteAmount": {"type": "integer", "minimum": -100, "maximum": 100},
 }
 
+SCORE_SCHEMA_PROPERTIES: dict[str, dict[str, Any]] = {
+    "composition_score": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 35,
+        "description": "Composition score out of 35: subject clarity, balance, visual guidance, and cropping.",
+    },
+    "lighting_score": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 35,
+        "description": "Lighting score out of 35: exposure, highlight/shadow detail, dynamic range, and dimensionality.",
+    },
+    "color_score": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 20,
+        "description": "Color score out of 20: white balance, color harmony, saturation, and style consistency.",
+    },
+    "technical_score": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 10,
+        "description": "Technical quality score out of 10: sharpness, noise, focus accuracy, and motion blur.",
+    },
+}
+
+WEIGHTED_SCORE_RUBRIC = """評分維度與 Rubric：
+構圖（35分）評估：主體明確性、畫面平衡、視覺引導、裁切。
+- 29–35：主體極為突出，三分法/黃金比例等構圖原則運用自然，視線有明確引導，裁切完美無多餘元素。
+- 21–28：構圖合理，主體清楚，但視覺引導或平衡感稍弱。
+- 13–20：主體尚可辨識，但構圖平凡或存在明顯裁切失誤。
+- 7–12：主體模糊不清，畫面雜亂，缺乏視覺重心。
+- 0–6：構圖嚴重失敗，無法判斷主體或意圖。
+
+光影（35分）評估：曝光準確性、高光細節保留、陰影細節保留、動態範圍表現、立體感。
+- 29–35：曝光精準，高光無死白，陰影無死黑，動態範圍充分，光影塑造強烈立體感。
+- 21–28：曝光基本正確，少量高光或陰影溢出，立體感尚可。
+- 13–20：過曝或欠曝明顯，動態範圍壓縮感重，立體感弱。
+- 7–12：嚴重曝光失誤，大量細節遺失。
+- 0–6：幾乎無法辨識光影結構。
+
+色彩（20分）評估：白平衡、色彩協調性、飽和度適當性、整體風格一致性。
+- 17–20：白平衡準確或有意圖性偏移，色彩搭配協調，飽和度自然或風格化但一致。
+- 13–16：色彩整體可接受，但白平衡略偏或局部色彩不協調。
+- 8–12：白平衡明顯偏差，色彩顯髒或過飽和/過淡。
+- 0–7：色彩嚴重失準，影響整體觀看體驗。
+
+技術品質（10分）評估：主體清晰度、雜訊控制、失焦程度、動態模糊。
+- 9–10：主體銳利，雜訊極低，無非預期失焦或動態模糊。
+- 7–8：主體尚清晰，雜訊可接受，輕微瑕疵不影響觀看。
+- 4–6：明顯雜訊或輕微失焦，影響細節呈現。
+- 0–3：嚴重失焦、強烈雜訊或劇烈動態模糊。
+
+overall_score = 四項加總，滿分 100。請確保 overall_score 等於 composition_score + lighting_score + color_score + technical_score。"""
+
 # Mapping from UI/Claude-friendly names to Lightroom Camera Raw Settings XMP attributes.
 XMP_PARAM_MAP = {
     "Exposure": ("Exposure2012", "float_signed"),
@@ -80,8 +135,39 @@ XMP_PARAM_MAP = {
 }
 
 
+def load_dotenv_file(path: str | Path = DEFAULT_DOTENV_PATH, override: bool = False) -> bool:
+    """Load KEY=VALUE pairs from a local .env file into os.environ.
+
+    Existing environment variables are preserved by default so deployed secrets
+    or shell-provided values remain authoritative.
+    """
+    env_path = Path(path)
+    if not env_path.exists():
+        return False
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        if override or key not in os.environ:
+            os.environ[key] = value
+    return True
+
+
 def get_api_key() -> str | None:
-    """Return Anthropic API key from environment or Streamlit secrets when available."""
+    """Return Anthropic API key from environment, .env, or Streamlit secrets when available."""
+    load_dotenv_file()
     if os.getenv("ANTHROPIC_API_KEY"):
         return os.getenv("ANTHROPIC_API_KEY")
     try:
@@ -178,6 +264,10 @@ def build_lightroom_tool_schema() -> dict[str, Any]:
                 "composition_analysis",
                 "lighting_analysis",
                 "color_analysis",
+                "composition_score",
+                "lighting_score",
+                "color_score",
+                "technical_score",
                 "overall_score",
                 "lightroom_parameters",
             ],
@@ -203,7 +293,8 @@ def build_lightroom_tool_schema() -> dict[str, Any]:
                 "composition_analysis": {"type": "string", "description": "Objective composition critique in Traditional Chinese."},
                 "lighting_analysis": {"type": "string", "description": "Objective lighting and dynamic range critique in Traditional Chinese."},
                 "color_analysis": {"type": "string", "description": "Objective color, white balance, and palette critique in Traditional Chinese."},
-                "overall_score": {"type": "integer", "minimum": 0, "maximum": 100, "description": "Overall photographic quality score."},
+                **SCORE_SCHEMA_PROPERTIES,
+                "overall_score": {"type": "integer", "minimum": 0, "maximum": 100, "description": "Sum of composition_score, lighting_score, color_score, and technical_score."},
                 "lightroom_parameters": {
                     "type": "object",
                     "additionalProperties": False,
@@ -228,8 +319,9 @@ def build_claude_request(
         "請先根據照片內容為照片命名，產生一個適合放入 Notion Name 欄位的繁體中文短標題；"
         "再產生 3-8 個適合 Notion multi-select 篩選的繁體中文標籤，包含主體、類型、情緒、色調或修圖方向；"
         "接著判斷作品集篩選狀態：精選代表可保留或發表，可修代表有潛力但需後製或裁切，淘汰代表不建議保留；"
-        "再分析這張照片的構圖、光影與色彩，給出 0-100 綜合評分，"
+        "接著分析這張照片的構圖、光影、色彩與技術品質，依下方權重制給出分項分數，"
         "並產生可直接轉成 Lightroom XMP preset 的完整調整參數。"
+        f"\n\n{WEIGHTED_SCORE_RUBRIC}"
     )
     if style_reference:
         instruction_text += (
@@ -244,7 +336,7 @@ def build_claude_request(
         )
     return {
         "model": model,
-        "max_tokens": 1800,
+        "max_tokens": 2400,
         "temperature": 0.2,
         "tools": [build_lightroom_tool_schema()],
         "tool_choice": {"type": "tool", "name": LIGHTROOM_TOOL_NAME} if force_tool_choice else {"type": "auto"},
@@ -396,12 +488,12 @@ def _safe_stem(filename: str) -> str:
     return safe or "preset"
 
 
-def build_xmp_zip(batch_results: list[dict[str, Any]]) -> bytes:
-    """Return a zip archive containing one .xmp file per successful batch result."""
+def build_xmp_zip(results: list[dict[str, Any]]) -> bytes:
+    """Return a zip archive containing one .xmp file per analysis result."""
     buffer = io.BytesIO()
     used_names: set[str] = set()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for index, result in enumerate(batch_results, start=1):
+        for index, result in enumerate(results, start=1):
             xmp = result.get("xmp")
             if not xmp:
                 continue
@@ -416,13 +508,17 @@ def build_xmp_zip(batch_results: list[dict[str, Any]]) -> bytes:
     return buffer.getvalue()
 
 
-def build_portfolio_csv(batch_results: list[dict[str, Any]]) -> str:
-    """Build a CSV portfolio report from batch analysis results."""
+def build_portfolio_csv(results: list[dict[str, Any]]) -> str:
+    """Build a CSV portfolio report from one or more analysis results."""
     fieldnames = [
         "photo_title",
         "selection_status",
         "photo_tags",
         "filename",
+        "composition_score",
+        "lighting_score",
+        "color_score",
+        "technical_score",
         "overall_score",
         "composition_analysis",
         "lighting_analysis",
@@ -432,7 +528,7 @@ def build_portfolio_csv(batch_results: list[dict[str, Any]]) -> str:
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
-    for result in batch_results:
+    for result in results:
         analysis = result.get("analysis", {}) or {}
         params = analysis.get("lightroom_parameters", {}) or {}
         row = {
@@ -440,6 +536,10 @@ def build_portfolio_csv(batch_results: list[dict[str, Any]]) -> str:
             "selection_status": analysis.get("selection_status", _selection_status_from_score(analysis.get("overall_score"))),
             "photo_tags": ", ".join(str(tag) for tag in analysis.get("photo_tags", []) if str(tag).strip()),
             "filename": result.get("filename", ""),
+            "composition_score": analysis.get("composition_score", ""),
+            "lighting_score": analysis.get("lighting_score", ""),
+            "color_score": analysis.get("color_score", ""),
+            "technical_score": analysis.get("technical_score", ""),
             "overall_score": analysis.get("overall_score", ""),
             "composition_analysis": analysis.get("composition_analysis", ""),
             "lighting_analysis": analysis.get("lighting_analysis", ""),
@@ -735,6 +835,13 @@ def build_notion_page_payload(database_id: str, result: dict[str, Any]) -> dict[
         {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [_notion_rich_text(f"原始檔名：{filename}")]}},
         {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [_notion_rich_text(f"篩選狀態：{selection_status}")]}},
         {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [_notion_rich_text(f"標籤：{', '.join(tag['name'] for tag in photo_tags) or '—'}")]}},
+        {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [_notion_rich_text("評分明細")] }},
+        {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [_notion_rich_text(f"構圖分數：{analysis.get('composition_score', '—')}/35")]}},
+        {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [_notion_rich_text(f"光影分數：{analysis.get('lighting_score', '—')}/35")]}},
+        {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [_notion_rich_text(f"色彩分數：{analysis.get('color_score', '—')}/20")]}},
+        {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [_notion_rich_text(f"技術品質分數：{analysis.get('technical_score', '—')}/10")]}},
+        {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [_notion_rich_text(f"總分：{analysis.get('overall_score', '—')}/100")]}},
+        {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [_notion_rich_text("分析摘要")] }},
         {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [_notion_rich_text(f"構圖：{analysis.get('composition_analysis', '—')}")]}},
         {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [_notion_rich_text(f"光影：{analysis.get('lighting_analysis', '—')}")]}},
         {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [_notion_rich_text(f"色彩：{analysis.get('color_analysis', '—')}")]}},
@@ -784,112 +891,6 @@ def build_notion_page_payload(database_id: str, result: dict[str, Any]) -> dict[
     return payload
 
 
-def _analysis_score(result: dict[str, Any]) -> int | None:
-    score = (result.get("analysis") or {}).get("overall_score")
-    if isinstance(score, (int, float)):
-        return int(score)
-    return None
-
-
-def _analysis_title(result: dict[str, Any]) -> str:
-    analysis = result.get("analysis", {}) or {}
-    return str(analysis.get("photo_title") or result.get("filename") or "Untitled photo")
-
-
-def build_batch_summary_notion_payload(database_id: str, batch_results: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build a Notion page summarizing one completed batch analysis."""
-    now_label = datetime.now().strftime("%Y-%m-%d %H:%M")
-    scores = [score for result in batch_results if (score := _analysis_score(result)) is not None]
-    average_score = round(sum(scores) / len(scores), 1) if scores else None
-
-    status_counts: Counter[str] = Counter()
-    tag_counts: Counter[str] = Counter()
-    for result in batch_results:
-        analysis = result.get("analysis", {}) or {}
-        score = analysis.get("overall_score")
-        status = str(analysis.get("selection_status") or _selection_status_from_score(score)).strip()
-        status_counts[status] += 1
-        for tag in analysis.get("photo_tags", []) or []:
-            tag_name = str(tag).strip()
-            if tag_name:
-                tag_counts[tag_name] += 1
-
-    top_results = sorted(
-        batch_results,
-        key=lambda result: _analysis_score(result) if _analysis_score(result) is not None else -1,
-        reverse=True,
-    )[:5]
-    cover_upload_id = next((result.get("notion_file_upload_id") for result in top_results if result.get("notion_file_upload_id")), None)
-
-    properties: dict[str, Any] = {
-        "Name": {"title": [{"text": {"content": f"批次分析總結 - {now_label}"}}]},
-        "Type": {"select": {"name": "Batch Summary"}},
-    }
-    if average_score is not None:
-        properties["Score"] = {"number": average_score}
-    if tag_counts:
-        properties["Tags"] = {"multi_select": [{"name": name[:100]} for name, _ in tag_counts.most_common(8)]}
-
-    children: list[dict[str, Any]] = [
-        {"object": "block", "type": "heading_2", "heading_2": {"rich_text": [_notion_rich_text("批次分析總結")]}},
-        {
-            "object": "block",
-            "type": "paragraph",
-            "paragraph": {"rich_text": [_notion_rich_text(f"本批共 {len(batch_results)} 張；平均分數 {average_score if average_score is not None else '—'}。")]},
-        },
-        {
-            "object": "block",
-            "type": "paragraph",
-            "paragraph": {
-                "rich_text": [
-                    _notion_rich_text(
-                        "狀態統計："
-                        f"精選 {status_counts.get('精選', 0)}、"
-                        f"可修 {status_counts.get('可修', 0)}、"
-                        f"淘汰 {status_counts.get('淘汰', 0)}。"
-                    )
-                ]
-            },
-        },
-    ]
-
-    if tag_counts:
-        children.append(
-            {
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {"rich_text": [_notion_rich_text("常見標籤：" + ", ".join(f"{name}({count})" for name, count in tag_counts.most_common(10)))]},
-            }
-        )
-
-    children.append({"object": "block", "type": "heading_3", "heading_3": {"rich_text": [_notion_rich_text("Top 5 照片")]}})
-    for index, result in enumerate(top_results, start=1):
-        analysis = result.get("analysis", {}) or {}
-        score = analysis.get("overall_score", "—")
-        status = analysis.get("selection_status") or _selection_status_from_score(score)
-        children.append(
-            {
-                "object": "block",
-                "type": "bulleted_list_item",
-                "bulleted_list_item": {"rich_text": [_notion_rich_text(f"{index}. {_analysis_title(result)}｜{result.get('filename', '')}｜{score} 分｜{status}")]},
-            }
-        )
-
-    children.extend(
-        [
-            {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [_notion_rich_text("建議下一步")]}},
-            {"object": "block", "type": "to_do", "to_do": {"rich_text": [_notion_rich_text("先處理精選照片，確認 XMP 套用後的膚色、白平衡與高光細節。")], "checked": False}},
-            {"object": "block", "type": "to_do", "to_do": {"rich_text": [_notion_rich_text("可修照片先做裁切與曝光修正，再決定是否進入精選。")], "checked": False}},
-            {"object": "block", "type": "to_do", "to_do": {"rich_text": [_notion_rich_text("淘汰照片保留分析紀錄即可，不建議投入細修時間。")], "checked": False}},
-        ]
-    )
-
-    payload: dict[str, Any] = {"parent": {"database_id": database_id}, "properties": properties, "children": children}
-    if cover_upload_id:
-        payload["cover"] = _notion_file_upload_object(cover_upload_id)
-    return payload
-
-
 def export_result_to_notion(notion_token: str, database_id: str, result: dict[str, Any]) -> dict[str, Any]:
     """Create one Notion page for a photo analysis result."""
     response = requests.post(
@@ -902,19 +903,6 @@ def export_result_to_notion(notion_token: str, database_id: str, result: dict[st
     )
     if response.status_code >= 400:
         raise RuntimeError(f"Notion 匯出失敗 {response.status_code}: {response.text}")
-    return response.json()
-
-
-def export_batch_summary_to_notion(notion_token: str, database_id: str, batch_results: list[dict[str, Any]]) -> dict[str, Any]:
-    """Create a Notion page summarizing a completed batch analysis."""
-    response = requests.post(
-        "https://api.notion.com/v1/pages",
-        headers={**_notion_headers(notion_token)},
-        json=build_batch_summary_notion_payload(database_id, batch_results),
-        timeout=60,
-    )
-    if response.status_code >= 400:
-        raise RuntimeError(f"Notion 批次總結匯出失敗 {response.status_code}: {response.text}")
     return response.json()
 
 

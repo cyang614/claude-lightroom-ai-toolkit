@@ -11,16 +11,17 @@ from photo_analyzer import (
     build_portfolio_csv,
     build_xmp_zip,
     call_claude_api,
-    export_batch_summary_to_notion,
     export_result_to_notion,
     extract_tool_json,
     generate_xmp,
     get_api_key,
+    load_dotenv_file,
     prepare_image_for_claude,
     upload_file_to_notion,
 )
 
 OUTPUT_DIR = Path("outputs")
+load_dotenv_file()
 DEFAULT_NOTION_TOKEN = os.getenv("NOTION_TOKEN", "")
 DEFAULT_NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID", "")
 
@@ -181,11 +182,11 @@ with st.sidebar:
     )
     st.divider()
     st.header("Notion 匯出（可選）")
-    notion_enabled = st.checkbox("分析後匯出到 Notion", value=True)
+    notion_enabled = st.checkbox("分析後逐張匯出到 Notion", value=True)
     notion_token = st.text_input("Notion Integration Token", value=DEFAULT_NOTION_TOKEN, type="password", help="需先在 Notion 將資料庫分享給 integration。")
     notion_database_id = st.text_input("Notion Database ID", value=DEFAULT_NOTION_DATABASE_ID)
     notion_file_upload_enabled = st.checkbox("匯出 Notion 前，直接上傳壓縮圖到 Notion", value=True)
-    st.caption("Notion 頁面會寫入照片名稱、Score、Status、Tags、XMP code block、構圖/光影/色彩分析，並使用 Notion File Upload 建立預覽圖。")
+    st.caption("Notion 會為每張照片建立獨立頁面；頁面會寫入照片名稱、Score、Status、Tags、XMP code block、構圖/光影/色彩分析，並可用 Notion File Upload 建立預覽圖。")
 
 style_reference = None
 if mode.startswith("B"):
@@ -229,7 +230,6 @@ if st.button("開始批次分析", type="primary", use_container_width=True):
     status = st.empty()
     results: list[dict] = []
     errors: list[str] = []
-    st.session_state.pop("notion_batch_summary_page_id", None)
 
     for index, uploaded in enumerate(uploaded_files, start=1):
         status.write(f"正在分析 {index}/{len(uploaded_files)}：{uploaded.name}")
@@ -248,21 +248,13 @@ if st.button("開始批次分析", type="primary", use_container_width=True):
                 result["notion_file_upload_filename"] = notion_file.get("filename") or compressed_filename
                 result["notion_file_upload_source"] = "compressed"
                 result["notion_xmp_embed_method"] = "code_block"
-            results.append(result)
             if notion_enabled and notion_token and notion_database_id:
                 notion_page = export_result_to_notion(notion_token, notion_database_id, result)
                 result["notion_page_id"] = notion_page.get("id")
+            results.append(result)
         except Exception as exc:
             errors.append(f"{uploaded.name}: {exc}")
         progress.progress(index / len(uploaded_files))
-
-    if notion_enabled and notion_token and notion_database_id and results:
-        try:
-            status.write("正在建立 Notion 批次總結頁")
-            summary_page = export_batch_summary_to_notion(notion_token, notion_database_id, results)
-            st.session_state["notion_batch_summary_page_id"] = summary_page.get("id")
-        except Exception as exc:
-            errors.append(f"批次總結頁: {exc}")
 
     st.session_state["analysis_results"] = results
     st.session_state["analysis_errors"] = errors
@@ -280,8 +272,6 @@ if not results:
     st.stop()
 
 st.success(f"完成 {len(results)} 張照片分析。")
-if st.session_state.get("notion_batch_summary_page_id"):
-    st.caption(f"Notion 批次總結頁：已建立 {st.session_state['notion_batch_summary_page_id']}")
 
 summary_rows = []
 for result in results:
@@ -290,12 +280,17 @@ for result in results:
         {
             "photo_title": analysis.get("photo_title", ""),
             "filename": result["filename"],
-            "score": analysis.get("overall_score"),
+            "composition_score": analysis.get("composition_score"),
+            "lighting_score": analysis.get("lighting_score"),
+            "color_score": analysis.get("color_score"),
+            "technical_score": analysis.get("technical_score"),
+            "overall_score": analysis.get("overall_score"),
             "status": analysis.get("selection_status"),
             "tags": ", ".join(str(tag) for tag in analysis.get("photo_tags", []) if str(tag).strip()),
             "original_MB": round(result.get("original_size_mb", 0), 2),
             "sent_to_claude_MB": round(result.get("compressed_size_mb", 0), 2),
             "xmp_path": result.get("xmp_path"),
+            "notion_page_id": result.get("notion_page_id"),
             "notion_file_upload_id": result.get("notion_file_upload_id"),
             "notion_xmp_embed_method": result.get("notion_xmp_embed_method"),
             "compressed_image_path": result.get("compressed_image_path"),
@@ -320,6 +315,7 @@ st.subheader("逐張分析")
 for result in results:
     analysis = result["analysis"]
     photo_title = analysis.get("photo_title") or result["filename"]
+    tags = ", ".join(str(tag) for tag in analysis.get("photo_tags", []) if str(tag).strip())
     with st.expander(f"{photo_title}｜{result['filename']}｜分數 {analysis.get('overall_score', '—')}/100", expanded=len(results) == 1):
         score_col, meta_col = st.columns([1, 2])
         with score_col:
@@ -335,17 +331,30 @@ for result in results:
         with meta_col:
             st.write(f"Claude 命名：**{photo_title}**")
             st.write(f"篩選狀態：**{analysis.get('selection_status', '—')}**")
-            tags = ", ".join(str(tag) for tag in analysis.get("photo_tags", []) if str(tag).strip())
             st.write(f"標籤：{tags or '—'}")
             st.write(f"原始檔名：`{result['filename']}`")
             st.write(f"原始大小：{result.get('original_size_mb', 0):.2f} MB")
             st.write(f"送 Claude 大小：{result.get('compressed_size_mb', 0):.2f} MB")
             st.write(f"壓縮圖：`{result.get('compressed_image_path')}`")
             st.write(f"XMP：`{result.get('xmp_path')}`")
+            if result.get("notion_page_id"):
+                st.caption(f"Notion 頁面：已建立 {result.get('notion_page_id')}")
             if result.get("notion_file_upload_id"):
                 st.caption(f"Notion 預覽圖：已直接上傳 {result.get('notion_file_upload_filename')}")
             if result.get("notion_xmp_embed_method") == "code_block":
                 st.caption("Notion XMP：已寫入頁面 XML code block")
+
+        st.markdown("#### 評分明細")
+        score_cols = st.columns(4)
+        score_items = [
+            ("構圖", analysis.get("composition_score", "—"), 35),
+            ("光影", analysis.get("lighting_score", "—"), 35),
+            ("色彩", analysis.get("color_score", "—"), 20),
+            ("技術品質", analysis.get("technical_score", "—"), 10),
+        ]
+        for col, (label, value, maximum) in zip(score_cols, score_items):
+            with col:
+                st.metric(label, f"{value}/{maximum}")
 
         col1, col2, col3 = st.columns(3)
         with col1:

@@ -2,15 +2,16 @@ import base64
 import csv
 import io
 import json
+import os
 import tempfile
 import unittest
 import zipfile
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from photo_analyzer import (
     AnthropicAPIError,
     LIGHTROOM_TOOL_NAME,
-    build_batch_summary_notion_payload,
     build_claude_request,
     build_notion_page_payload,
     build_portfolio_csv,
@@ -18,6 +19,7 @@ from photo_analyzer import (
     call_claude_api,
     google_drive_direct_image_url,
     load_google_drive_credentials,
+    load_dotenv_file,
     compress_image_for_claude,
     extract_tool_json,
     generate_xmp,
@@ -26,6 +28,32 @@ from photo_analyzer import (
 
 
 class PhotoAnalyzerTests(unittest.TestCase):
+    def test_load_dotenv_file_sets_project_credentials_without_overriding_existing_env(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+            env_path.write_text(
+                "ANTHROPIC_API_KEY=from-env-file\n"
+                "NOTION_TOKEN=from-notion-file\n"
+                "NOTION_DATABASE_ID=db-from-file\n"
+                "EXISTING_VALUE=from-file\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "EXISTING_VALUE": "already-set",
+                },
+                clear=True,
+            ):
+                loaded = load_dotenv_file(env_path)
+
+                self.assertTrue(loaded)
+                self.assertEqual(os.environ["ANTHROPIC_API_KEY"], "from-env-file")
+                self.assertEqual(os.environ["NOTION_TOKEN"], "from-notion-file")
+                self.assertEqual(os.environ["NOTION_DATABASE_ID"], "db-from-file")
+                self.assertEqual(os.environ["EXISTING_VALUE"], "already-set")
+
     def test_build_claude_request_forces_lightroom_tool_use_with_base64_image(self):
         image_bytes = b"fake-jpeg-bytes"
         payload = build_claude_request(image_bytes, "image/jpeg")
@@ -50,6 +78,29 @@ class PhotoAnalyzerTests(unittest.TestCase):
         instruction = payload["messages"][0]["content"][1]["text"]
         self.assertIn("照片命名", instruction)
         self.assertIn("標籤", instruction)
+
+    def test_build_claude_request_uses_weighted_score_rubric(self):
+        payload = build_claude_request(b"fake-jpeg-bytes", "image/jpeg")
+        schema = payload["tools"][0]["input_schema"]
+        properties = schema["properties"]
+
+        expected_ranges = {
+            "composition_score": (0, 35),
+            "lighting_score": (0, 35),
+            "color_score": (0, 20),
+            "technical_score": (0, 10),
+        }
+        for field_name, (minimum, maximum) in expected_ranges.items():
+            self.assertIn(field_name, schema["required"])
+            self.assertEqual(properties[field_name]["minimum"], minimum)
+            self.assertEqual(properties[field_name]["maximum"], maximum)
+
+        instruction = payload["messages"][0]["content"][1]["text"]
+        self.assertIn("構圖（35分）", instruction)
+        self.assertIn("光影（35分）", instruction)
+        self.assertIn("色彩（20分）", instruction)
+        self.assertIn("技術品質（10分）", instruction)
+        self.assertIn("overall_score = 四項加總", instruction)
 
     def test_compress_image_for_claude_reduces_large_jpeg_under_limit(self):
         try:
@@ -159,12 +210,12 @@ class PhotoAnalyzerTests(unittest.TestCase):
         self.assertIn("低對比", text)
 
     def test_build_xmp_zip_contains_one_xmp_per_result(self):
-        batch_results = [
+        results = [
             {"filename": "a.jpg", "xmp": "<xmp>a</xmp>"},
             {"filename": "nested/b.png", "xmp": "<xmp>b</xmp>"},
         ]
 
-        zip_bytes = build_xmp_zip(batch_results)
+        zip_bytes = build_xmp_zip(results)
 
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
             self.assertEqual(set(archive.namelist()), {"a.xmp", "b.xmp"})
@@ -181,6 +232,10 @@ class PhotoAnalyzerTests(unittest.TestCase):
                     "composition_analysis": "構圖穩定",
                     "lighting_analysis": "光線柔和",
                     "color_analysis": "色彩溫暖",
+                    "composition_score": 30,
+                    "lighting_score": 28,
+                    "color_score": 18,
+                    "technical_score": 9,
                     "overall_score": 88,
                     "lightroom_parameters": {"Exposure": 0.2, "Contrast": 8},
                 },
@@ -194,6 +249,10 @@ class PhotoAnalyzerTests(unittest.TestCase):
         self.assertEqual(parsed[0]["photo_title"], "城市晨光裡的飛鳥")
         self.assertEqual(parsed[0]["selection_status"], "精選")
         self.assertEqual(parsed[0]["photo_tags"], "飛鳥, 城市, 晨光")
+        self.assertEqual(parsed[0]["composition_score"], "30")
+        self.assertEqual(parsed[0]["lighting_score"], "28")
+        self.assertEqual(parsed[0]["color_score"], "18")
+        self.assertEqual(parsed[0]["technical_score"], "9")
         self.assertEqual(parsed[0]["overall_score"], "88")
         self.assertEqual(parsed[0]["Exposure"], "0.2")
         self.assertIn("構圖穩定", parsed[0]["composition_analysis"])
@@ -213,6 +272,10 @@ class PhotoAnalyzerTests(unittest.TestCase):
                 "composition_analysis": "構圖穩定",
                 "lighting_analysis": "光線柔和",
                 "color_analysis": "色彩溫暖",
+                "composition_score": 30,
+                "lighting_score": 28,
+                "color_score": 18,
+                "technical_score": 9,
                 "overall_score": 88,
                 "lightroom_parameters": {"Exposure": 0.2, "Contrast": 8},
             },
@@ -231,6 +294,10 @@ class PhotoAnalyzerTests(unittest.TestCase):
         self.assertEqual(payload["properties"]["Image URL"]["url"], "https://drive.google.com/uc?export=view&id=file123")
         children_text = json.dumps(payload["children"], ensure_ascii=False)
         self.assertIn("原始檔名：a.jpg", children_text)
+        self.assertIn("構圖分數：30/35", children_text)
+        self.assertIn("光影分數：28/35", children_text)
+        self.assertIn("色彩分數：18/20", children_text)
+        self.assertIn("技術品質分數：9/10", children_text)
         self.assertIn("構圖穩定", children_text)
         self.assertIn("outputs/a_compressed.jpg", children_text)
         self.assertIn("outputs/a.xmp", children_text)
@@ -267,39 +334,6 @@ class PhotoAnalyzerTests(unittest.TestCase):
         self.assertEqual(image_blocks[0]["image"]["file_upload"]["id"], "upload123")
         self.assertEqual(payload["cover"]["type"], "file_upload")
         self.assertEqual(payload["cover"]["file_upload"]["id"], "upload123")
-
-    def test_build_batch_summary_notion_payload_counts_statuses_and_sets_cover(self):
-        results = [
-            {
-                "filename": "a.jpg",
-                "notion_file_upload_id": "cover123",
-                "analysis": {
-                    "photo_title": "A",
-                    "selection_status": "精選",
-                    "photo_tags": ["街拍", "暖色"],
-                    "overall_score": 92,
-                },
-            },
-            {
-                "filename": "b.jpg",
-                "analysis": {
-                    "photo_title": "B",
-                    "selection_status": "可修",
-                    "photo_tags": ["街拍"],
-                    "overall_score": 71,
-                },
-            },
-        ]
-
-        payload = build_batch_summary_notion_payload("db123", results)
-        children_text = json.dumps(payload["children"], ensure_ascii=False)
-
-        self.assertEqual(payload["parent"], {"database_id": "db123"})
-        self.assertEqual(payload["properties"]["Type"]["select"]["name"], "Batch Summary")
-        self.assertEqual(payload["properties"]["Score"]["number"], 81.5)
-        self.assertEqual(payload["cover"]["file_upload"]["id"], "cover123")
-        self.assertIn("本批共 2 張", children_text)
-        self.assertIn("Top 5 照片", children_text)
 
     def test_upload_file_to_notion_creates_and_sends_single_part_file_upload(self):
         create_response = Mock(status_code=200)

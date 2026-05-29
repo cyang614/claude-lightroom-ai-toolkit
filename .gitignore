@@ -1,13 +1,18 @@
+# Secrets / local environment
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Python
 __pycache__/
 *.py[cod]
-
+.pytest_cache/
 .venv/
 venv/
 env/
 
-.env
-.streamlit/secrets.toml
-
+# App outputs
 outputs/
 
 # Local credentials and API tokens

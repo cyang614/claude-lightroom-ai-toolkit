@@ -129,17 +129,37 @@ pip install -r requirements.txt
 
 > CR3 支援依賴 `rawpy`。若你的系統無法安裝 rawpy，JPG/PNG 仍可正常使用。
 
-## 設定 API Key
+## 設定 API Key / Notion Token
 
-方式一：環境變數
+建議使用專案根目錄的 `.env` 檔案保存本機開發用設定。`.env` 已加入 `.gitignore`，不要提交到版本控制。
+
+```bash
+cp .env.example .env
+```
+
+然後編輯 `.env`：
+
+```dotenv
+ANTHROPIC_API_KEY=你的 Anthropic API Key
+NOTION_TOKEN=你的 Notion Integration Token
+NOTION_DATABASE_ID=你的 Notion Database ID
+```
+
+App 啟動時會自動讀取 `.env`，並預填 Streamlit 側邊欄的 Claude / Notion 欄位。
+
+其他可選方式：
+
+1. 直接設定環境變數：
 
 ```bash
 export ANTHROPIC_API_KEY="你的 Anthropic API Key"
+export NOTION_TOKEN="你的 Notion token"
+export NOTION_DATABASE_ID="你的 database id"
 ```
 
-方式二：在 Streamlit 側邊欄輸入 API Key。
+2. 在 Streamlit 側邊欄手動輸入。
 
-方式三：Streamlit secrets
+3. Streamlit secrets：
 
 ```toml
 # .streamlit/secrets.toml
@@ -156,13 +176,6 @@ streamlit run app.py
 
 ```bash
 python3 -m unittest tests.test_photo_analyzer -v
-```
-
-```bash
-export NOTION_TOKEN="你的 Notion token"
-export NOTION_DATABASE_ID="你的 database id"
-export ANTHROPIC_API_KEY="你的 Anthropic key"
-streamlit run app.py
 ```
 
 ## 檔案說明

@@ -9,7 +9,7 @@
     "Score": {
       "type": "number",
       "required_by_app": true,
-      "description": "Claude 綜合評分 0-100"
+      "description": "Claude 綜合評分 0-100；由構圖35、光影35、色彩20、技術品質10加總"
     },
     "Status": {
       "type": "select",
@@ -25,7 +25,7 @@
     "Type": {
       "type": "select",
       "required_by_app": true,
-      "options": ["Photo Analysis", "Batch Summary"],
+      "options": ["Photo Analysis"],
       "description": "資料類型"
     },
     "Composition Analysis": {
@@ -108,11 +108,6 @@
       "name": "By Tags",
       "type": "board_or_table",
       "group_by": "Tags"
-    },
-    {
-      "name": "Batch Summaries",
-      "type": "table",
-      "filter": "Type is Batch Summary"
     }
   ]
 }
